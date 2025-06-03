@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Initialize variables
 URL=""
 TOKEN=""
@@ -36,6 +35,8 @@ ALL_VERSIONS=$(echo "$TAG_PAGE" | grep -oP 'href="\/actions\/runner\/releases\/t
 NEWEST_VERSION=$(echo "$ALL_VERSIONS" | sort -V | tail -n 1)
 
 DOWNLOADS_DIR="downloaded_runners"
+mkdir -p $DOWNLOADS_DIR
+
 for ENTRY in $DOWNLOADS_DIR/*; do
     if [[ "$ENTRY" =~ "$NEWEST_VERSION" ]]; then
         DOWNLOAD_FILE=$ENTRY
@@ -57,10 +58,11 @@ fi
 echo -e "Creating Name"
 
 REPO_NAME="${URL##*/}"
+REPO_NAME="${REPO_NAME,,}"
 
 HOSTNAME=$(hostname)
 
-RUNNERS_DIR="./runners"
+RUNNERS_DIR="runners"
 
 INDEX=0
 
@@ -84,10 +86,35 @@ RUNNER_DIR=$RUNNERS_DIR/$RUNNER_NAME
 echo "Creating New Runner"
 
 mkdir -p $RUNNER_DIR
-tar xzf ./$DOWNLOADS_DIR/actions-runner-linux-x64-${NEWEST_VERSION}.tar.gz -C $RUNNER_DIR
-set -x
+tar xzf $DOWNLOADS_DIR/actions-runner-linux-x64-${NEWEST_VERSION}.tar.gz -C $RUNNER_DIR
+
 cat <<EOF > $RUNNER_DIR/.config.input
 
 $RUNNER_NAME
 EOF
 $RUNNER_DIR/config.sh --url $URL --token $TOKEN < $RUNNER_DIR/.config.input
+
+SERVICE_NAME="${REPO_NAME}_${INDEX}"
+
+SERVICE_FILE="
+[Unit]\n
+Description=GitHub Actions Self-Hosted Runner: $SERVICE_NAME\n
+After=network.target\n
+\n
+[Service]\n
+ExecStart=$(pwd)/$RUNNER_DIR/run.sh\n
+WorkingDirectory=$(pwd)/$RUNNER_DIR\n
+Restart=always\n
+RestartSec=5\n
+User=$USER\n
+Environment="RUNNER_ALLOW_RUNASROOT=1"\n
+\n
+[Install]\n
+WantedBy=multi-user.target\n
+"
+
+echo -e "$SERVICE_FILE" | sudo tee /etc/systemd/system/$SERVICE_NAME.service > /dev/null
+
+echo "Must start system as sudo"
+sudo systemctl enable $SERVICE_NAME
+sudo systemctl start $SERVICE_NAME
