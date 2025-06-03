@@ -1,9 +1,54 @@
 #!/bin/bash
-# Initialize variables
+
+# -----------------------
+# Define Colors and Helpers
+# -----------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+print_step() {
+    echo -e "${YELLOW}==> $1${NC}"
+}
+
+print_success() {
+    echo -e "${GREEN}✔ $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}✖ $1${NC}"
+}
+
+# -----------------------
+# Show Help
+# -----------------------
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    echo -e "${CYAN}Usage: $0 --url <REPO_URL> --token <REGISTRATION_TOKEN>${NC}"
+    echo -e "${CYAN}This script sets up a GitHub Actions self-hosted runner for the specified repository.${NC}"
+    exit 0
+fi
+
+# -----------------------
+# Validate Dependencies
+# -----------------------
+REQUIRED_TOOLS=(curl tar sudo)
+
+for tool in "${REQUIRED_TOOLS[@]}"; do
+    if ! command -v "$tool" > /dev/null 2>&1; then
+        print_error "Required tool '$tool' is not installed."
+        exit 1
+    fi
+done
+
+# -----------------------
+# Parse Arguments
+# -----------------------
 URL=""
 TOKEN=""
 
-# Parse command-line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
         --url)
@@ -15,19 +60,21 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            echo "Unknown parameter passed: $1"
+            print_error "Unknown parameter passed: $1"
             exit 1
             ;;
     esac
 done
 
-# Check if required arguments are provided
 if [[ -z "$URL" || -z "$TOKEN" ]]; then
-    echo "Both --url and --token are required."
+    print_error "Both --url and --token are required."
     exit 1
 fi
 
-echo "Checking For Runner Updates"
+# -----------------------
+# Get Latest Runner
+# -----------------------
+print_step "Checking for Runner Updates..."
 
 TAG_PAGE_LOCATION="https://github.com/actions/runner/tags"
 TAG_PAGE=$(curl -s $TAG_PAGE_LOCATION)
@@ -35,9 +82,9 @@ ALL_VERSIONS=$(echo "$TAG_PAGE" | grep -oP 'href="\/actions\/runner\/releases\/t
 NEWEST_VERSION=$(echo "$ALL_VERSIONS" | sort -V | tail -n 1)
 
 DOWNLOADS_DIR="downloaded_runners"
-mkdir -p $DOWNLOADS_DIR
+mkdir -p "$DOWNLOADS_DIR"
 
-for ENTRY in $DOWNLOADS_DIR/*; do
+for ENTRY in "$DOWNLOADS_DIR"/*; do
     if [[ "$ENTRY" =~ "$NEWEST_VERSION" ]]; then
         DOWNLOAD_FILE=$ENTRY
         break
@@ -45,26 +92,24 @@ for ENTRY in $DOWNLOADS_DIR/*; do
 done
 
 if [ -z "${DOWNLOAD_FILE+x}" ]; then
-    echo -e "Found Updated Runner\nDeleting Old Runner"
-    rm -rf $DOWNLOADS_DIR/*
-    echo -e "Downloaded Updated Runner"
+    print_step "Found Updated Runner. Deleting old runner..."
+    rm -rf "$DOWNLOADS_DIR"/*
+    print_step "Downloading Updated Runner..."
     NEWEST_DOWNLOAD_LOCATION="https://github.com/actions/runner/releases/download/v${NEWEST_VERSION}/actions-runner-linux-x64-${NEWEST_VERSION}.tar.gz"
     DOWNLOAD_FILE="actions-runner-linux-x64-${NEWEST_VERSION}.tar.gz"
     curl -s -o "$DOWNLOADS_DIR/$DOWNLOAD_FILE" -L "$NEWEST_DOWNLOAD_LOCATION"
+    print_success "Latest Runner Downloaded"
 else
-    echo "Already have most up to date runner"
+    print_success "Runner up to date"
 fi
 
-echo -e "Creating Name"
-
+# -----------------------
+# Create Runner
+# -----------------------
 REPO_NAME="${URL##*/}"
 REPO_NAME="${REPO_NAME,,}"
-
-HOSTNAME=$(hostname)
-
-RUNNERS_DIR="runners"
-
 INDEX=0
+RUNNERS_DIR="runners"
 
 runner_exists() {
     local runner_name=$1
@@ -75,46 +120,61 @@ runner_exists() {
     fi
 }
 
-while runner_exists "${REPO_NAME}_${HOSTNAME}_${INDEX}"; do
+while runner_exists "${REPO_NAME}_$(hostname)_${INDEX}"; do
     INDEX=$((INDEX + 1))
 done
 
-RUNNER_NAME="${REPO_NAME}_${HOSTNAME}_${INDEX}"
-
+RUNNER_NAME="${REPO_NAME}_$(hostname)_${INDEX}"
 RUNNER_DIR=$RUNNERS_DIR/$RUNNER_NAME
 
-echo "Creating New Runner"
+print_step "Creating Runner at $RUNNER_DIR"
+mkdir -p "$RUNNER_DIR"
+tar xzf "$DOWNLOADS_DIR/actions-runner-linux-x64-${NEWEST_VERSION}.tar.gz" -C "$RUNNER_DIR"
 
-mkdir -p $RUNNER_DIR
-tar xzf $DOWNLOADS_DIR/actions-runner-linux-x64-${NEWEST_VERSION}.tar.gz -C $RUNNER_DIR
-
-cat <<EOF > $RUNNER_DIR/.config.input
+cat <<EOF > "$RUNNER_DIR/.config.input"
 
 $RUNNER_NAME
 EOF
-$RUNNER_DIR/config.sh --url $URL --token $TOKEN < $RUNNER_DIR/.config.input
+
+echo -e "${CYAN}"
+"$RUNNER_DIR/config.sh" --url "$URL" --token "$TOKEN" < "$RUNNER_DIR/.config.input"
+print_success "Runner Created"
+
+# -----------------------
+# Setup Systemd Service
+# -----------------------
+print_step "Creating Service for Runner..."
 
 SERVICE_NAME="${REPO_NAME}_${INDEX}"
+SERVICE_FILE_PATH="/etc/systemd/system/$SERVICE_NAME.service"
 
-SERVICE_FILE="
-[Unit]\n
-Description=GitHub Actions Self-Hosted Runner: $SERVICE_NAME\n
-After=network.target\n
-\n
-[Service]\n
-ExecStart=$(pwd)/$RUNNER_DIR/run.sh\n
-WorkingDirectory=$(pwd)/$RUNNER_DIR\n
-Restart=always\n
-RestartSec=5\n
-User=$USER\n
-Environment="RUNNER_ALLOW_RUNASROOT=1"\n
-\n
-[Install]\n
-WantedBy=multi-user.target\n
-"
+sudo tee "$SERVICE_FILE_PATH" > /dev/null <<EOF
+[Unit]
+Description=GitHub Actions Self-Hosted Runner: $SERVICE_NAME
+After=network.target
 
-echo -e "$SERVICE_FILE" | sudo tee /etc/systemd/system/$SERVICE_NAME.service > /dev/null
+[Service]
+ExecStart=$(pwd)/$RUNNER_DIR/run.sh
+WorkingDirectory=$(pwd)/$RUNNER_DIR
+Restart=always
+RestartSec=5
+User=$USER
+Environment=RUNNER_ALLOW_RUNASROOT=1
 
-echo "Must start system as sudo"
-sudo systemctl enable $SERVICE_NAME
-sudo systemctl start $SERVICE_NAME
+[Install]
+WantedBy=multi-user.target
+EOF
+
+print_step "Reloading systemd..."
+sudo systemctl daemon-reload
+
+read -rp "Do you want to enable and start the runner service now? [y/N] " CONFIRM
+if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+    sudo systemctl enable "$SERVICE_NAME"
+    sudo systemctl start "$SERVICE_NAME"
+    print_success "Service $SERVICE_NAME started and enabled"
+else
+    print_step "Service not started"
+fi
+
+print_success "Runner Built and Activated"
