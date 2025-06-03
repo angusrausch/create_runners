@@ -72,12 +72,28 @@ if [[ -z "$URL" || -z "$TOKEN" ]]; then
 fi
 
 # -----------------------
+# Get Arch Version
+# -----------------------
+if [ "$(arch)" == "x86_64" ]; then 
+    ARCH="x64"
+elif [ "$(arch)" == "aarch64" ]; then
+    ARCH="arm64"
+else
+    print_error "Unkown ARCH type: $(arch)"
+    exit 1
+fi
+
+# -----------------------
 # Get Latest Runner
 # -----------------------
 print_step "Checking for Runner Updates..."
 
 TAG_PAGE_LOCATION="https://github.com/actions/runner/tags"
 TAG_PAGE=$(curl -s $TAG_PAGE_LOCATION)
+if [[ $? -ne 0 ]]; then
+    print_error "Failed to find tags."
+    exit 1
+fi
 ALL_VERSIONS=$(echo "$TAG_PAGE" | grep -oP 'href="\/actions\/runner\/releases\/tag\/v\K[0-9]+\.[0-9]+\.[0-9]+')
 NEWEST_VERSION=$(echo "$ALL_VERSIONS" | sort -V | tail -n 1)
 
@@ -91,13 +107,17 @@ for ENTRY in "$DOWNLOADS_DIR"/*; do
     fi
 done
 
+FILENAME="actions-runner-linux-${ARCH}-${NEWEST_VERSION}.tar.gz"
 if [ -z "${DOWNLOAD_FILE+x}" ]; then
     print_step "Found Updated Runner. Deleting old runner..."
     rm -rf "$DOWNLOADS_DIR"/*
     print_step "Downloading Updated Runner..."
-    NEWEST_DOWNLOAD_LOCATION="https://github.com/actions/runner/releases/download/v${NEWEST_VERSION}/actions-runner-linux-x64-${NEWEST_VERSION}.tar.gz"
-    DOWNLOAD_FILE="actions-runner-linux-x64-${NEWEST_VERSION}.tar.gz"
-    curl -s -o "$DOWNLOADS_DIR/$DOWNLOAD_FILE" -L "$NEWEST_DOWNLOAD_LOCATION"
+    NEWEST_DOWNLOAD_LOCATION="https://github.com/actions/runner/releases/download/v${NEWEST_VERSION}/${FILENAME}"
+    curl -o "$DOWNLOADS_DIR/$FILENAME" -L "$NEWEST_DOWNLOAD_LOCATION"
+    if [[ $? -ne 0 ]]; then
+        print_error "Failed to download runner."
+        exit 1
+    fi
     print_success "Latest Runner Downloaded"
 else
     print_success "Runner up to date"
@@ -129,7 +149,11 @@ RUNNER_DIR=$RUNNERS_DIR/$RUNNER_NAME
 
 print_step "Creating Runner at $RUNNER_DIR"
 mkdir -p "$RUNNER_DIR"
-tar xzf "$DOWNLOADS_DIR/actions-runner-linux-x64-${NEWEST_VERSION}.tar.gz" -C "$RUNNER_DIR"
+tar xzf "$DOWNLOADS_DIR/$FILENAME" -C "$RUNNER_DIR"
+if [[ $? -ne 0 ]]; then
+    print_error "Failed to build runner."
+    exit 1
+fi
 
 cat <<EOF > "$RUNNER_DIR/.config.input"
 
@@ -138,6 +162,11 @@ EOF
 
 echo -e "${CYAN}"
 "$RUNNER_DIR/config.sh" --url "$URL" --token "$TOKEN" < "$RUNNER_DIR/.config.input"
+if [[ $? -ne 0 ]]; then
+    print_error "Runner configuration failed."
+    exit 1
+fi
+
 print_success "Runner Created"
 
 # -----------------------
@@ -170,8 +199,8 @@ sudo systemctl daemon-reload
 
 read -rp "Do you want to enable and start the runner service now? [y/N] " CONFIRM
 if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
-    sudo systemctl enable "$SERVICE_NAME"
-    sudo systemctl start "$SERVICE_NAME"
+    sudo systemctl enable "$SERVICE_NAME" &> /dev/null
+    sudo systemctl start "$SERVICE_NAME" &> /dev/null
     print_success "Service $SERVICE_NAME started and enabled"
 else
     print_step "Service not started"
