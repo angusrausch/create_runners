@@ -174,36 +174,17 @@ print_success "Runner Created"
 # -----------------------
 print_step "Creating Service for Runner..."
 
-SERVICE_NAME="${REPO_NAME}_${INDEX}"
-SERVICE_FILE_PATH="/etc/systemd/system/$SERVICE_NAME.service"
-
-sudo tee "$SERVICE_FILE_PATH" > /dev/null <<EOF
-[Unit]
-Description=GitHub Actions Self-Hosted Runner: $SERVICE_NAME
-After=network.target
-
-[Service]
-ExecStart=$(pwd)/$RUNNER_DIR/run.sh
-WorkingDirectory=$(pwd)/$RUNNER_DIR
-Restart=always
-RestartSec=5
-User=$USER
-Environment=RUNNER_ALLOW_RUNASROOT=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-print_step "Reloading systemd..."
-sudo systemctl daemon-reload
-
-read -rp "Do you want to enable and start the runner service now? [y/N] " CONFIRM
-if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
-    sudo systemctl enable "$SERVICE_NAME" &> /dev/null
-    sudo systemctl start "$SERVICE_NAME" &> /dev/null
-    print_success "Service $SERVICE_NAME started and enabled"
-else
-    print_step "Service not started"
+pushd "$RUNNER_DIR"
+sudo "./svc.sh" install
+if [[ $? -ne 0 ]]; then
+    print_error "Failed to create service."
+    exit 1
 fi
+sudo "./svc.sh" start
+if [[ $? -ne 0 ]]; then
+    print_error "Failed to start service."
+    exit 1
+fi
+popd
 
 print_success "Runner Built and Activated"
