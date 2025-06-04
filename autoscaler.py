@@ -48,49 +48,67 @@ class Runner_Watcher:
             pass
         
         self.check_updated_runner()
-        self.build_runner()
         self.monitor_queued_runs()
 
     def get_runs_by_status(self, status):
         url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/runs"
-        params = {"status": status, "per_page": 10}
+        params = {"per_page": 20}
+
         response = requests.get(url, headers=headers, params=params)
+        breakpoint()
         if response.status_code == 200:
-            self.queued_jobs = response.json().get("workflow_runs", [])
+            return response.json().get("workflow_runs", [])
         else:
             print(f"[ERROR] Failed to fetch {status} runs: {response.status_code} - {response.text}")
-            self.queued_jobs = []
+            return []
 
     def monitor_queued_runs(self):
         print(f"Monitoring queued GitHub Actions runs for {REPO_OWNER}/{REPO_NAME} every {POLL_INTERVAL}s...\n")
         seen_run_ids = set()
 
+        while len(self.runners) < MIN_RUNNERS:
+            self.build_runners()
+
         try:
             while True:
                 try:
-                    self.get_runs_by_status("queued")
-
+                    self.queued_jobs = self.get_runs_by_status("queued")
+                    self.active_jobs = self.get_runs_by_status("in_progress")
+                    
                     if self.queued_jobs:
                         print(f"[{time.strftime('%H:%M:%S')}] Queued runs: {len(self.queued_jobs)}")
                         for run in self.queued_jobs:
                             print(f"  - ID: {run['id']} | Branch: {run['head_branch']} | Event: {run['event']} | Created: {run['created_at']}")
                             seen_run_ids.add(run["id"])
                     else:
-                        print(f"[{time.strftime('%H:%M:%S')}] No new queued runs.")
-
+                        print(f"[{time.strftime('%H:%M:%S')}] No queued runs.")
+                    
+                    if self.active_jobs:
+                        print(f"[{time.strftime('%H:%M:%S')}] Queued runs: {len(self.active_jobs)}")
+                        for run in self.active_jobs:
+                            print(f"  - ID: {run['id']} | Branch: {run['head_branch']} | Event: {run['event']} | Created: {run['created_at']}")
+                            seen_run_ids.add(run["id"])
+                    else:
+                        print(f"[{time.strftime('%H:%M:%S')}] No active runs.")
                 except Exception as e:
                     print(f"[ERROR] {e}")
+                
+                runners_to_build = min(len(self.queued_jobs), MAX_RUNNERS)
+                if runners_to_build:
+                    self.build_runners(runners_to_build)
+                 
 
                 time.sleep(POLL_INTERVAL)
         except KeyboardInterrupt:
             print("\nPlease wait while runners are stopped and removed")
-            time.sleep(5)
             for runner in self.runners:
-                self.stop_runner(runner)
+                self.check_token()
+                runner.stop(self.token["token"])
         except Exception as e:
             print("Unhandled exception occured:\n{e}\nPlease wait while runners are stopped")
             for runner in self.runners:
-                self.stop_runner(runner)
+                self.check_token()
+                runner.stop(self.token["token"])
                 
 
 
@@ -113,91 +131,19 @@ class Runner_Watcher:
             raise Exception(f"Failed to get runner token: {response.status_code} - {response.text}")
 
 
-    def build_runner(self, number=1):
+    def build_runners(self, number=1):
         archive_path = self.check_updated_runner()
 
         for i in range(number):
-            runner_name = f"runner_{uuid.uuid4().hex}"
-            runner_dir = os.path.join(RUNNERS_DIR, runner_name)
-            with tarfile.open(archive_path, "r:gz") as tar:
-                tar.extractall(path=runner_dir)
-            
-            self.runners.append(runner_dir)
             self.check_token()
-            print("Configuring runner")
-            self.configure_runner(runner_name, runner_dir)
-            print("Starting runner")
-            self.start_runner(runner_dir)
-            print(f"Started runner {runner_dir}")
-
-    def configure_runner(self, runner_name, runner_dir):
-        config_script = os.path.join(runner_dir, "config.sh")
-        os.chmod(config_script, os.stat(config_script).st_mode | stat.S_IEXEC)
-
-        subprocess.run(
-            [config_script, "--url", self.repo_url, "--token", self.token["token"], "--name", runner_name, "--unattended"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-            timeout=30
-        )
-
-    def start_runner(self, runner_dir):
-        original_dir = os.getcwd()
-        os.chdir(runner_dir)
-
-        result = subprocess.run(
-            ["sudo", "./svc.sh", "install"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10
-        )
-        result = subprocess.run(
-            ["sudo", "./svc.sh", "start"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10
-        )
-        os.chdir(original_dir)
-
-    def stop_runner(self, runner_dir):
-        original_dir = os.getcwd()
-        os.chdir(runner_dir)
-
-        subprocess.run(
-            ["sudo", "./svc.sh", "stop"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10
-        )
-        subprocess.run(
-            ["sudo", "./svc.sh", "uninstall"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10
-        )
-        subprocess.run(
-            ["./config.sh", "remove", "--token", self.token["token"]],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10
-        )
-        
-        os.chdir(original_dir)
-        try:
-            shutil.rmtree(runner_dir)
-        except Exception as e:
-            print(f"Failed to remove {runner_dir} directory")
-
+            self.runners.append(Runner(archive_path, self.token["token"], self.repo_url))
 
     def check_token(self):
         if self.token:
-            expires_at = datetime.strptime(self.token["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            try:
+                expires_at = datetime.strptime(self.token["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                expires_at = datetime.strptime(self.token["expires_at"], "%Y-%m-%dT%H:%M:%S.%f%z").replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
             if now + timedelta(minutes=5) <= expires_at:
                 return
@@ -256,6 +202,82 @@ class Runner_Watcher:
             print(f"Unknown ARCH type: {arch}")
             exit(1)
 
+class Runner:
+    def __init__(self, archive_path, token, repo_url):
+        self.runner_name = f"runner_{uuid.uuid4().hex}"
+        self.runner_dir = os.path.join(RUNNERS_DIR, self.runner_name)
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(path=self.runner_dir)
+        
+        print("Configuring runner")
+        self.configure(token, repo_url)
+        print("Starting runner")
+        self.start()
+        print(f"Started runner {self.runner_dir}")
+
+    def configure(self, token, repo_url):
+        config_script = os.path.join(self.runner_dir, "config.sh")
+        os.chmod(config_script, os.stat(config_script).st_mode | stat.S_IEXEC)
+
+        subprocess.run(
+            [config_script, "--url", repo_url, "--token", token, "--name", self.runner_name, "--unattended"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=30
+        )
+
+    def start(self):
+        original_dir = os.getcwd()
+        os.chdir(self.runner_dir)
+
+        result = subprocess.run(
+            ["sudo", "./svc.sh", "install"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10
+        )
+        result = subprocess.run(
+            ["sudo", "./svc.sh", "start"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10
+        )
+        os.chdir(original_dir)
+
+    def stop(self, token):
+        original_dir = os.getcwd()
+        os.chdir(self.runner_dir)
+
+        subprocess.run(
+            ["sudo", "./svc.sh", "stop"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10
+        )
+        subprocess.run(
+            ["sudo", "./svc.sh", "uninstall"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10
+        )
+        subprocess.run(
+            ["./config.sh", "remove", "--token", token],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10
+        )
+        
+        os.chdir(original_dir)
+        try:
+            shutil.rmtree(self.runner_dir)
+        except Exception as e:
+            print(f"Failed to remove {self.runner_dir} directory")
 
 if __name__ == "__main__":
     Runner_Watcher()
