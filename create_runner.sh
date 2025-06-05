@@ -48,6 +48,7 @@ done
 # -----------------------
 URL=""
 TOKEN=""
+RUNNER_AMOUNT=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -57,6 +58,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --token)
             TOKEN="$2"
+            shift 2
+            ;;
+        --runners)
+            RUNNER_AMOUNT="$2"
             shift 2
             ;;
         *)
@@ -133,52 +138,82 @@ RUNNERS_DIR="$(pwd)/runners"
 runner_exists() {
     local runner_name=$1
     if ls "$RUNNERS_DIR"/"$runner_name" 1> /dev/null 2>&1; then
+    # if ls "$RUNNERS_DIR/$runner_name" >/dev/null 2>&1; then
         return 0
     else
         return 1
     fi
 }
 
-while runner_exists "${REPO_NAME}_$(hostname)_${INDEX}"; do
-    INDEX=$((INDEX + 1))
+get_index() {
+    local index=$1
+    while runner_exists "${REPO_NAME}_$(hostname)_${index}"; do
+        index=$((index + 1))
+    done
+    echo "$index"
+}
+
+
+if [ "$RUNNER_AMOUNT" == "0" ]; then
+    INDEX=$(get_index 0)
+    RUNNER_AMOUNT=$(($INDEX + 1))
+else 
+    INDEX=0
+fi
+
+echo -e "INDEX: $INDEX\nRUNNER_AMOUNT: $RUNNER_AMOUNT"
+echo "${REPO_NAME}_$(hostname)_${INDEX}"
+
+# while [ "$INDEX" -lt "$RUNNER_AMOUNT" ]; do
+#     echo "Looping: INDEX=$INDEX"
+#     INDEX=$((INDEX + 1))
+# done
+# exit
+
+while [ $INDEX -lt $RUNNER_AMOUNT ]; do
+    RUNNER_NAME="${REPO_NAME}_$(hostname)_${INDEX}"
+    RUNNER_DIR=$RUNNERS_DIR/$RUNNER_NAME
+    echo "$RUNNER_NAME"
+    if runner_exists "$RUNNER_NAME"; then
+        INDEX=$(($INDEX + 1))
+        continue
+    fi
+
+    print_step "Creating Runner at $RUNNER_DIR..."
+    mkdir -p "$RUNNER_DIR"
+    tar xzf "$DOWNLOADS_DIR/$FILENAME" -C "$RUNNER_DIR"
+    if [[ $? -ne 0 ]]; then
+        print_error "Failed to build runner."
+        exit 1
+    fi
+
+    "$RUNNER_DIR/config.sh" --url "$URL" --token "$TOKEN" --unattended --name "$RUNNER_NAME" > /dev/null 2>&1
+    if [[ $? -ne 0 ]]; then
+        print_error "Runner configuration failed."
+        exit 1
+    fi
+
+    print_success "Runner Created"
+
+    # -----------------------
+    # Setup Systemd Service
+    # -----------------------
+    print_step "Creating Service for Runner..."
+
+    pushd "$RUNNER_DIR" > /dev/null 2>&1
+    sudo "./svc.sh" install > /dev/null 2>&1
+    if [[ $? -ne 0 ]]; then
+        print_error "Failed to create service."
+        exit 1
+    fi
+    sudo "./svc.sh" start > /dev/null 2>&1
+    if [[ $? -ne 0 ]]; then
+        print_error "Failed to start service."
+        exit 1
+    fi
+    popd > /dev/null 2>&1
+
+
+    print_success "Runner Built and Activated"
+    INDEX=$(($INDEX + 1))
 done
-
-RUNNER_NAME="${REPO_NAME}_$(hostname)_${INDEX}"
-RUNNER_DIR=$RUNNERS_DIR/$RUNNER_NAME
-
-print_step "Creating Runner at $RUNNER_DIR..."
-mkdir -p "$RUNNER_DIR"
-tar xzf "$DOWNLOADS_DIR/$FILENAME" -C "$RUNNER_DIR"
-if [[ $? -ne 0 ]]; then
-    print_error "Failed to build runner."
-    exit 1
-fi
-
-"$RUNNER_DIR/config.sh" --url "$URL" --token "$TOKEN" --unattended --name "$RUNNER_NAME" > /dev/null 2>&1
-if [[ $? -ne 0 ]]; then
-    print_error "Runner configuration failed."
-    exit 1
-fi
-
-print_success "Runner Created"
-
-# -----------------------
-# Setup Systemd Service
-# -----------------------
-print_step "Creating Service for Runner..."
-
-pushd "$RUNNER_DIR" > /dev/null 2>&1
-sudo "./svc.sh" install > /dev/null 2>&1
-if [[ $? -ne 0 ]]; then
-    print_error "Failed to create service."
-    exit 1
-fi
-sudo "./svc.sh" start > /dev/null 2>&1
-if [[ $? -ne 0 ]]; then
-    print_error "Failed to start service."
-    exit 1
-fi
-popd > /dev/null 2>&1
-
-
-print_success "Runner Built and Activated"
