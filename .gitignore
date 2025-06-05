@@ -1,2 +1,4 @@
 downloaded_runners/*
 runners/*
+venv/*
+.env

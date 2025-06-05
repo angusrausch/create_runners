@@ -124,12 +124,11 @@ else
 fi
 
 # -----------------------
-# Create Runner
+# Create Runners
 # -----------------------
 REPO_NAME="${URL##*/}"
 REPO_NAME="${REPO_NAME,,}"
-INDEX=0
-RUNNERS_DIR="runners"
+RUNNERS_DIR="$(pwd)/runners"
 
 runner_exists() {
     local runner_name=$1
@@ -147,7 +146,7 @@ done
 RUNNER_NAME="${REPO_NAME}_$(hostname)_${INDEX}"
 RUNNER_DIR=$RUNNERS_DIR/$RUNNER_NAME
 
-print_step "Creating Runner at $RUNNER_DIR"
+print_step "Creating Runner at $RUNNER_DIR..."
 mkdir -p "$RUNNER_DIR"
 tar xzf "$DOWNLOADS_DIR/$FILENAME" -C "$RUNNER_DIR"
 if [[ $? -ne 0 ]]; then
@@ -155,13 +154,7 @@ if [[ $? -ne 0 ]]; then
     exit 1
 fi
 
-cat <<EOF > "$RUNNER_DIR/.config.input"
-
-$RUNNER_NAME
-EOF
-
-echo -e "${CYAN}"
-"$RUNNER_DIR/config.sh" --url "$URL" --token "$TOKEN" < "$RUNNER_DIR/.config.input"
+"$RUNNER_DIR/config.sh" --url "$URL" --token "$TOKEN" --unattended --name "$RUNNER_NAME" > /dev/null 2>&1
 if [[ $? -ne 0 ]]; then
     print_error "Runner configuration failed."
     exit 1
@@ -174,17 +167,18 @@ print_success "Runner Created"
 # -----------------------
 print_step "Creating Service for Runner..."
 
-pushd "$RUNNER_DIR"
-sudo "./svc.sh" install
+pushd "$RUNNER_DIR" > /dev/null 2>&1
+sudo "./svc.sh" install > /dev/null 2>&1
 if [[ $? -ne 0 ]]; then
     print_error "Failed to create service."
     exit 1
 fi
-sudo "./svc.sh" start
+sudo "./svc.sh" start > /dev/null 2>&1
 if [[ $? -ne 0 ]]; then
     print_error "Failed to start service."
     exit 1
 fi
-popd
+popd > /dev/null 2>&1
+
 
 print_success "Runner Built and Activated"
