@@ -30,6 +30,12 @@ print_process() {
     echo -e "${CYAN} $1${NC}"
 }
 
+user_id=`id -u`
+if [ $user_id -ne 0 ]; then
+    print_error "Must run as sudo"
+    exit 1
+fi
+
 print_question "This will remove all runners present on this systm and clear the runners dir\nThis will not remove the runner from GitHub\nAre you sure you wish to proceed? (yN)"
 read CONFIRMATION
 if [ "$CONFIRMATION" == "y" ]; then
@@ -45,14 +51,20 @@ if [ "$CONFIRMATION" == "y" ]; then
 
         for service in $services; do
             print_process "Removing $service..."
-            sudo systemctl stop "$service" || true
-            sudo systemctl disable "$service" || true
-            sudo rm -f "/etc/systemd/system/$service"
+            systemctl stop "$service" || true
+            systemctl disable "$service" || true
+            rm -f "/etc/systemd/system/$service"
         done
 
         print_step "Reloading systemd..."
-        sudo systemctl daemon-reload
+        systemctl daemon-reload
     fi
+
+    print_step "Further purge of the systemd directory..."
+
+    rm -rf /etc/systemd/system/actions.runner*
+
+    print_success "Removed all runners services from systemd"
 
     print_step "Purging ./runners dir"
 
